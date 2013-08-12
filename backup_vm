@@ -100,6 +100,9 @@ then
 		echo -e "$JAUNE $list_vm $BLANC\n"
 		nbre_exclus=$(expr $total_vm - $nbre_vm2backup) # nbre de machine exclus de la sauvegarde
 	fi
+else
+	# inclus toute les vm dans la liste des vm a sauvegarder
+	vm2backup=$(qm list | sed -e 's/^\s*//' | grep -v "^VMID" | awk {'print $1'})
 fi
 
 # Sauvegarde des vm

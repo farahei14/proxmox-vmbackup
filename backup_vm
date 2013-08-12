@@ -58,7 +58,6 @@ if [ -d $backup_dir ]
 then
 	sync ; sync
 	umount $backup_dir &> /dev/null
-	sleep 10
 	mount $backup_device $backup_dir
 else
 	echo "$proxmox_ident Echec de montage de $backup_dir" | mail -s "$proxmox_ident probleme de backup" $mail_admin
@@ -102,7 +101,7 @@ then
 	fi
 else
 	# inclus toute les vm dans la liste des vm a sauvegarder
-	vm2backup=$(qm list | sed -e 's/^\s*//' | grep -v "^VMID" | awk {'print $1'})
+	vm2backup=$(qm list | sed -e 's/^\s*//' | grep -v "^VMID" | awk {'print $1'} | sed -e 's/ /,/g')
 fi
 
 # Sauvegarde des vm
@@ -113,7 +112,7 @@ echo -e "=======================================================================
 for item in $(echo $vm2backup | sed -e "s/,/ /g")
 do
 	# verifie si vm existe dans la base
-	qm list | sed -e 's/^\s*//' | grep "^item"
+	qm list | sed -e 's/^\s*//' | grep "^$item"
 	if [ $? -ne 0 ]
 	then
 		# la vm a sauvegarde n'existe pas (console)

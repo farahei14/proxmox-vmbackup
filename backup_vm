@@ -1,0 +1,201 @@
+#!/bin/bash
+
+# import param from config (dans le meme repertoire)
+. backup_vm.conf
+
+# couleur pour affichage en console
+VERT="\\033[1;32m"
+NORMAL="\\033[0;39m"
+ROUGE="\\033[1;31m"
+ROSE="\\033[1;35m"
+BLEU="\\033[1;34m"
+BLANC="\\033[0;02m"
+BLANCLAIR="\\033[1;08m"
+JAUNE="\\033[1;33m"
+CYAN="\\033[1;36m"
+
+# creation des fichiers de log
+report_file=$report_file.$RANDOM.txt
+if [ -f $report_file ]
+then
+	echo "$proxmox_ident Erreur lors de la creation de $report_file, un fichier portant le nom $report_file existe deja " | mail -s "$proxmox_ident probleme de backup" $mail_admin
+	echo -e "$ROUGE Erreur de création de $report_file $BLANC"
+	exit 1
+else
+	touch $report_file
+	chmod 600 $report_file
+fi
+
+report_temp=$report_temp.$RANDOM.txt
+if [ -f $report_temp ]
+then
+	echo "$proxmox_ident Erreur lors de la creation de $report_temp, un fichier portant le nom $report_temp existe deja " | mail -s "$proxmox_ident probleme de backup" $mail_admin
+	echo -e "$ROUGE Erreur de création de $report_temp $BLANC"
+	exit 1
+else
+	touch $report_temp
+	chmod 600 $report_temp
+fi
+
+# Recupération du mail des admins pour la commande vzdump
+if [ $disable_vzdumpmail = "no" ]
+then
+	for mail in $(echo $mail_admin | sed -e "s/,/ /g")
+	do
+		option_mail="-mailto $mail $option_mail"
+	done
+else
+	option_mail=""
+fi
+
+
+# wake up RD1000 device
+fdisk -l &> /dev/null
+
+# Montage du volume
+mkdir -p $backup_dir
+if [ -d $backup_dir ]
+then
+	sync ; sync
+	umount $backup_dir &> /dev/null
+	sleep 10
+	mount $backup_device $backup_dir
+else
+	echo "$proxmox_ident Echec de montage de $backup_dir" | mail -s "$proxmox_ident probleme de backup" $mail_admin
+	echo "$proxmox_ident Echec de montage de $backup_dir"
+fi
+
+# log date et heure du debut de traitement
+echo -e "$VERT>>> Debut de traitement : $BLANC$(date +"$format_date")$VERT <<<$BLANC"
+echo ">>> Debut de traitement : $(date +"$format_date") <<<" >> $report_file
+
+
+# Lister les vm non sauvegardées dans le rapport
+# nbre de vm installé sur proxmox
+total_vm=$(qm list | sed -e "s/^\s*//" | grep -v "^VMID" | wc -l)
+
+# nbre de vm à sauvegarder spécifié dans le fichier de conf
+if [ $vm2backup != "all" ]
+then
+	nbre_vm2backup=$(echo $vm2backup | sed -e 's/,/ /g' | wc -w)
+	# s'il manque des vm, afficher les vm non sauvegardés
+	if [ $nbre_vm2backup -lt $total_vm ]
+	then
+		exclude_vm="^VMID"
+		for vm in $(echo $vm2backup | sed -e 's/,/ /g')
+		do
+			exclude_vm="$exclude_vm\|^$vm"
+		done
+
+		# ecrit dans le fichier de rapport la liste des vm non sauvegardées
+		echo "Les vm exclus de la sauvegarde sont :" >> $report_file
+		qm list | sed -e 's/\s*//' | grep -v $exclude_vm | awk {'print "\t-"$1 " " $2'} >> $report_file
+
+		# affichage en console
+		echo -e "Les vm" "$ROUGE" "exclus" "$BLANC" "de la sauvegarde sont :" 
+		for vm in $(qm list | sed -e 's/\s*//' | grep -v $exclude_vm | awk {'print $1 ":" $2'})
+		do
+			list_vm="$list_vm $(echo $vm | awk -F ':' {'print "\\t-" $1 " " $2 "\\n"'})"
+		done
+		echo -e "$JAUNE $list_vm $BLANC\n"
+		nbre_exclus=$(expr $total_vm - $nbre_vm2backup) # nbre de machine exclus de la sauvegarde
+	fi
+fi
+
+# Sauvegarde des vm
+nbre_ok=0 # backup ok
+nbre_failed=0 # backup failed
+
+echo -e "==========================================================================\n" >> $report_file
+for item in $(echo $vm2backup | sed -e "s/,/ /g")
+do
+	# verifie si vm existe dans la base
+	qm list | sed -e 's/^\s*//' | grep "^item"
+	if [ $? -ne 0 ]
+	then
+		# la vm a sauvegarde n'existe pas (console)
+		echo -e "$BLANC>>>$ROUGE Impossible de sauvegarder vmid=$item, vm introuvable$BLANC <<<"
+		echo -e "$BLANC>>>$ROUGE verifier votre fichier de conf $BLANC<<<"
+
+		# la vm a sauvegarde n'existe pas (fichier log)
+		echo -e ">>> Impossible de sauvegarder vmid=$item, vm introuvable <<<" >> $report_file
+		echo -e ">>> verifier votre fichier de conf <<<" >> $report_file
+		nbre_failed=$(expr $nbre_failed + 1)
+	else
+		# recupère le nom de la vm
+		name_vm=$(qm list | sed -e 's/^\s*//' | grep "^$item" | awk {'print $2'})
+		# affiche la date et l'heure du debut de sauvegarde (fichier de log)
+		echo -e ">>> Debut Sauvegarde de $name_vm (vmid=$item)" >> $report_file
+		echo -e "\tStart at: $(date +"$format_date")" >> $report_file
+		# affiche la date et l'heure du debut de sauvegarde (console)
+		echo -e "$VERT\t>>>$BLANC Debut de Sauvegarde de $JAUNE$name_vm$BLANC (vmid=$JAUNE$item$BLANC)"
+		echo -e "$VERT\tStart at: $BLANC$(date +"$format_date")$BLANC"
+
+		# lance la sauvegarde
+		vzdump $item -dumpdir $backup_dir $option_mail -mode stop -remove -maxfiles $max_backup -node $vm_node -compress $compress_backup &> $report_temp
+		if [ $? -eq 0 ]
+		then
+			backup_size=$(grep "archive file size:" $report_temp | awk -F "archive file size:" {'print $2'})
+			time_backup=$(grep "Finished Backup of VM" $report_temp | awk -F ' ' {'print $NF'} | sed -e 's/(//' | sed -e 's/)//')
+			# affiche en console le resultat de la sauvegarde
+			echo -e "$BLANC\tBackup de:$JAUNE $name_vm $BLANC"
+			echo -e "\tStatut backup:$VERT OK$BLANC"
+			echo -e "\tSize backup: $VERT$backup_size$BLANC"
+			echo -e "\tDurée de sauvegarde: $VERT $time_backup $BLANC"
+
+			# ecrit dans fichier de log le resultat de la sauvegarde
+			echo -e "\tBackup de: $name_vm" >> $report_file
+			echo -e "\tStatut backup: OK" >> $report_file
+			echo -e "\tSize backup: $backup_size" >> $report_file
+			echo -e "\tDurée de sauvegarde: $time_backup" >> $report_file
+			nbre_ok=$(expr $nbre_ok + 1)
+		else
+			# recuperation erreur dans fichier de log
+			erreur_backup=$(grep "^ERROR" $report_temp)
+
+			# affiche le resultat en console
+			echo -e "$BLANC\tBackup de:$JAUNE $name_vm $BLANC"
+			echo -e "\tStatut backup:$ROUGE FAILED $BLANC"
+			echo -e "\t>>>$ROUGE ERROR $BLANC<<< $ROUGE $erreur_backup $BLANC >>>$ROUGE ERROR $BLANC<<< "
+
+			# ecriture du resultat dans fichier de log
+			echo -e "\tBackup de: $name_vm" >> $report_file
+			echo -e "\tStatut backup: FAILED" >> $report_file
+			echo -e "\t>>>ERROR<<< $erreur_backup >>>ERROR<<< " >> $report_file
+			nbre_failed=$(expr $nbre_failed + 1)
+		fi
+		echo -e "$VERT\tEnd at: $BLANC$(date +"$format_date")$BLANC"
+		echo -e "$VERT\t<<<$BLANC Fin Sauvegarde de $JAUNE$name_vm$BLANC (vmid=$JAUNE$item$BLANC)"
+
+		echo -e "\tEnd at: $(date +"$format_date")" >> $report_file
+		echo -e "<<< Fin Sauvegarde de $name_vm (vmid=$item)\n" >> $report_file
+	fi
+done
+echo "==========================================================================" >> $report_file
+
+# pied de page
+echo -e "$VERT>>> Fin de traitement : $BLANC$(date +"$format_date")$VERT <<<$BLANC\n\n"
+echo ">>> Fin de traitement : $(date +"$format_date") <<<" >> $report_file
+
+# compter le nombre de réussite et d'echec
+echo -e "$ROSE Resultat du traitement $BLANC"
+echo -e "$BLANC Sauvegarde $VERT ok$VERT $BLANC: $VERT $nbre_ok"
+echo -e "$BLANC Sauvegarde $ROUGE failed $BLANC: $ROUGE $nbre_failed"
+echo -e "$BLANC Nbre vm $JAUNE exclus $BLANC: $JAUNE $nbre_exclus $BLANC"
+
+# Envoi du rapport par mail
+cat $report_file | mail -s "$proxmox_ident ok: $nbre_ok failed: $nbre_failed exclus: $nbre_exclus" $mail_admin
+if [ $? -ne 0 ]
+then
+	logger "Impossible d'envoyer $report_file a $mail_admin"
+fi
+
+# nettoyage des fichiers utilise par le script
+if [ -f $report_file ] && [ -f $report_temp ]
+then
+	rm -f $report_file $report_temp
+fi
+
+# demontage du support
+sync ; sync
+umount $backup_dir

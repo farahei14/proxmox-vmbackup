@@ -8,10 +8,10 @@ emplacement du fichier de conf.
 
 ## Paramétrage
 Le fichier de conf permet :
-	- de choisir les vm qui seront sauvegardées.
-	- definir le type de compression lors de la sauvegarde.
-	- definir le nombre de sauvegarde à conserver.
-	- definir les personnes qui recevront le compte rendu par mail.
+- de choisir les vm qui seront sauvegardées.
+- definir le type de compression lors de la sauvegarde.
+- definir le nombre de sauvegarde à conserver.
+- definir les personnes qui recevront le compte rendu par mail.
 
 ## Licence
 Copyright (c) 2011-2013, Farahei14
